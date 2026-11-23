@@ -2,6 +2,12 @@ name: ESP32-C5 OpenThread RCP
 
 on:
   workflow_dispatch:
+    inputs:
+      transport:
+        description: RCP connection to the OpenThread host
+        type: choice
+        options: [usb, uart]
+        default: usb
   push:
     branches: [main]
     paths:
@@ -19,6 +25,7 @@ jobs:
         shell: bash
     env:
       IDF_REVISION: 880a203ae603d08a94d06aa01e0d6761958e5e9e
+      RCP_TRANSPORT: ${{ inputs.transport || 'usb' }}
       PIP_NO_CACHE_DIR: "1"
     steps:
       - name: Check out ESP-IDF v5.5.6
@@ -37,18 +44,26 @@ jobs:
           echo "IDF_TOOLS_PATH=$IDF_TOOLS_PATH" >> "$GITHUB_ENV"
           ./install.sh esp32c5
 
-      - name: Build and package ESP32-C5 UART RCP
+      - name: Build and package ESP32-C5 RCP
         run: |
           idf_source="$GITHUB_WORKSPACE/esp-idf"
           source "$idf_source/export.sh"
           cd "$idf_source/examples/openthread/ot_rcp"
-          cat >> sdkconfig.defaults <<'CONFIG'
-
-          CONFIG_OPENTHREAD_RCP_UART=y
-          CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-          CONFIG
+          case "$RCP_TRANSPORT" in
+            usb)
+              config=CONFIG_OPENTHREAD_RCP_USB_SERIAL_JTAG
+              description='Spinel HDLC over native USB Serial/JTAG'
+              printf '\nCONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y\n' >> sdkconfig.defaults
+              ;;
+            uart)
+              config=CONFIG_OPENTHREAD_RCP_UART
+              description='Spinel HDLC over UART0 at 460800 baud'
+              ;;
+            *) exit 2 ;;
+          esac
+          printf '\n%s=y\nCONFIG_ESPTOOLPY_FLASHSIZE_16MB=y\n' "$config" >> sdkconfig.defaults
           idf.py set-target esp32c5
-          grep -Fx 'CONFIG_OPENTHREAD_RCP_UART=y' sdkconfig
+          grep -Fx "$config=y" sdkconfig
           grep -Fx 'CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y' sdkconfig
           idf.py build
 
@@ -67,14 +82,14 @@ jobs:
             echo "ESP-IDF v5.5.6: https://github.com/espressif/esp-idf/tree/$IDF_REVISION"
             echo "Example: examples/openthread/ot_rcp"
             echo "Target: ESP32-C5, 16 MB flash, merged image at 0x0"
-            echo "Transport: Spinel HDLC over UART0 at 460800 baud"
+            echo "Transport: $description"
             cat SHA256SUMS
           } | tee BUILD.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the flash image and build information
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: esp32c5-rcp
+          name: esp32c5-rcp-${{ env.RCP_TRANSPORT }}
           path: ${{ runner.temp }}/esp32c5-rcp/
           if-no-files-found: error
           retention-days: 3
