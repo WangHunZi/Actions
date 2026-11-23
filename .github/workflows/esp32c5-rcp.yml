@@ -1,0 +1,80 @@
+name: ESP32-C5 OpenThread RCP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/esp32c5-rcp.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      IDF_REVISION: 880a203ae603d08a94d06aa01e0d6761958e5e9e
+      PIP_NO_CACHE_DIR: "1"
+    steps:
+      - name: Check out ESP-IDF v5.5.6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: espressif/esp-idf
+          ref: ${{ env.IDF_REVISION }}
+          path: esp-idf
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install ESP32-C5 build tools
+        working-directory: esp-idf
+        run: |
+          export IDF_TOOLS_PATH="$RUNNER_TEMP/esp-idf-tools"
+          echo "IDF_TOOLS_PATH=$IDF_TOOLS_PATH" >> "$GITHUB_ENV"
+          ./install.sh esp32c5
+
+      - name: Build and package ESP32-C5 UART RCP
+        run: |
+          idf_source="$GITHUB_WORKSPACE/esp-idf"
+          source "$idf_source/export.sh"
+          cd "$idf_source/examples/openthread/ot_rcp"
+          cat >> sdkconfig.defaults <<'CONFIG'
+
+          CONFIG_OPENTHREAD_RCP_UART=y
+          CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+          CONFIG
+          idf.py set-target esp32c5
+          grep -Fx 'CONFIG_OPENTHREAD_RCP_UART=y' sdkconfig
+          grep -Fx 'CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y' sdkconfig
+          idf.py build
+
+          output="$RUNNER_TEMP/esp32c5-rcp"
+          mkdir -p "$output/licenses"
+          idf.py merge-bin -o "$output/esp32c5-rcp.bin" -f raw
+          cp "$idf_source/LICENSE" "$output/licenses/esp-idf.txt"
+          cp "$idf_source/components/openthread/openthread/LICENSE" "$output/licenses/openthread.txt"
+          if [[ -f "$idf_source/NOTICE" ]]; then
+            cp "$idf_source/NOTICE" "$output/licenses/esp-idf-NOTICE.txt"
+          fi
+
+          cd "$output"
+          sha256sum esp32c5-rcp.bin > SHA256SUMS
+          {
+            echo "ESP-IDF v5.5.6: https://github.com/espressif/esp-idf/tree/$IDF_REVISION"
+            echo "Example: examples/openthread/ot_rcp"
+            echo "Target: ESP32-C5, 16 MB flash, merged image at 0x0"
+            echo "Transport: Spinel HDLC over UART0 at 460800 baud"
+            cat SHA256SUMS
+          } | tee BUILD.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the flash image and build information
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: esp32c5-rcp
+          path: ${{ runner.temp }}/esp32c5-rcp/
+          if-no-files-found: error
+          retention-days: 3
